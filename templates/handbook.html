@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>handbook</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-sc@5/400.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-sc@5/500.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-sc@5/700.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-sc@5/900.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --ink: #23405f;
+    --ink-soft: rgba(35, 64, 95, 0.72);
+    --ink-faint: rgba(35, 64, 95, 0.50);
+    --line: rgba(52, 98, 140, 0.18);
+    --yi: #66ccff;
+    --yi-deep: #2f9fe0;
+
+    --glass-1: rgba(255, 255, 255, 0.82);
+    --glass-2: rgba(255, 255, 255, 0.68);
+    --glass-3: rgba(255, 255, 255, 0.76);
+    --glass-edge: rgba(255, 255, 255, 0.88);
+    --glass-blur: 44px;
+    --veil-1: rgba(255, 255, 255, 0.62);
+    --veil-2: rgba(255, 255, 255, 0.50);
+    --veil-3: rgba(255, 255, 255, 0.58);
+    --glass-lift: rgba(60, 108, 158, 0.22);
+
+    --scrim-edge: rgba(240, 250, 255, 0.30);
+    --scrim-mid: rgba(240, 250, 255, 0.10);
+    --scrim-far: rgba(240, 250, 255, 0.00);
+  }
+
+  #root[data-dark="true"] {
+    --glass-1: rgba(250, 253, 255, 0.94);
+    --glass-2: rgba(240, 248, 255, 0.86);
+    --glass-3: rgba(247, 252, 255, 0.90);
+    --glass-edge: rgba(255, 255, 255, 0.72);
+    --glass-blur: 52px;
+    --veil-1: rgba(255, 255, 255, 0.74);
+    --veil-2: rgba(255, 255, 255, 0.64);
+    --veil-3: rgba(255, 255, 255, 0.70);
+    --glass-lift: rgba(2, 8, 18, 0.52);
+    --scrim-edge: rgba(6, 14, 26, 0.62);
+    --scrim-mid: rgba(6, 14, 26, 0.30);
+  }
+
+  body {
+    width: 1800px;
+    font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    background: #eaf3fb;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #root {
+    position: relative;
+    width: 1800px;
+    padding: 46px 44px 40px;
+    overflow: hidden;
+    background:
+      radial-gradient(120% 60% at 10% 0%, #e6f6ff 0%, transparent 58%),
+      radial-gradient(110% 56% at 90% 4%, #fdeaf4 0%, transparent 56%),
+      linear-gradient(168deg, #f4faff 0%, #e8f2fc 54%, #eef4fb 100%);
+  }
+
+  .bg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: 50% 26%;
+    z-index: 0;
+  }
+
+  .scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    background:
+      linear-gradient(180deg, var(--scrim-edge) 0%, var(--scrim-mid) 34%, var(--scrim-far) 62%),
+      linear-gradient(0deg, rgba(255, 255, 255, 0.24) 0%, transparent 46%);
+  }
+
+  .content { position: relative; z-index: 3; }
+
+  /* ---------- 玻璃页头 ---------- */
+  #glass {
+    position: relative;
+    z-index: 2;
+    padding: 30px 36px 28px;
+    border-radius: 40px;
+    color: var(--ink);
+    background: linear-gradient(158deg, var(--glass-1) 0%, var(--glass-2) 46%, var(--glass-3) 100%);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.5) brightness(1.10);
+    backdrop-filter: blur(var(--glass-blur)) saturate(1.5) brightness(1.10);
+    border: 1px solid var(--glass-edge);
+    box-shadow:
+      0 22px 58px var(--glass-lift),
+      inset 0 1px 0 rgba(255, 255, 255, 0.95),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.55);
+  }
+
+  /* 白雾压在 canvas 之上、文字之下，把折射面板变成磨砂。 */
+  .veil {
+    position: absolute;
+    inset: 3px;
+    z-index: 2;
+    border-radius: 38px;
+    background: linear-gradient(165deg, var(--veil-1) 0%, var(--veil-2) 52%, var(--veil-3) 100%);
+    pointer-events: none;
+  }
+
+  #glass.is-liquid {
+    background: transparent;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border-color: transparent;
+    box-shadow: none;
+  }
+
+  #glass.is-liquid > canvas { z-index: 1 !important; }
+
+  .panel-inner { position: relative; z-index: 3; }
+
+  .head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+  }
+
+  .title { display: flex; align-items: center; gap: 18px; min-width: 0; }
+
+  .badge {
+    width: 62px;
+    height: 62px;
+    flex-shrink: 0;
+    border-radius: 18px;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(150deg, #7fd8ff 0%, var(--yi) 46%, #3aa9e8 100%);
+    box-shadow: 0 8px 20px rgba(58, 169, 232, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  }
+
+  .badge svg { width: 32px; height: 32px; display: block; }
+
+  .title-text { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+
+  .title-main {
+    font-size: 38px;
+    font-weight: 900;
+    letter-spacing: 0.02em;
+    color: var(--ink);
+    line-height: 1.08;
+  }
+
+  .title-main em { font-style: normal; color: var(--yi-deep); }
+
+  .title-sub {
+    font-size: 17px;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+    color: var(--ink-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tally { display: flex; gap: 34px; flex-shrink: 0; }
+  .tally-item { text-align: right; }
+
+  .tally-label {
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    color: var(--ink-faint);
+  }
+
+  .tally-value {
+    font-size: 33px;
+    font-weight: 900;
+    line-height: 1.2;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tally-item.done .tally-value { color: var(--yi-deep); }
+  .tally-item.dup .tally-value { color: #e05c7a; }
+
+  /* ---------- 卡池分区 ---------- */
+  .section {
+    margin-top: 26px;
+    padding: 18px 20px 20px;
+    border-radius: 26px;
+    background: rgba(255, 255, 255, 0.58);
+    -webkit-backdrop-filter: blur(20px) saturate(1.3);
+    backdrop-filter: blur(20px) saturate(1.3);
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    box-shadow: 0 14px 34px rgba(45, 90, 140, 0.12);
+  }
+
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    margin-bottom: 14px;
+  }
+
+  .section-act {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #ffffff;
+    padding: 3px 12px;
+    border-radius: 9px;
+    background: linear-gradient(120deg, var(--yi) 0%, var(--yi-deep) 100%);
+    box-shadow: 0 4px 12px rgba(47, 159, 224, 0.30);
+  }
+
+  .section-name {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--ink);
+  }
+
+  .section-name::before { content: "▸ "; color: #f0a04b; }
+
+  .section-count {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 16px;
+  }
+
+  .tile {
+    border-radius: 14px;
+    overflow: hidden;
+    background: #ffffff;
+    border: 2px solid rgba(52, 98, 140, 0.10);
+    box-shadow: 0 6px 16px rgba(35, 64, 95, 0.12);
+  }
+
+  .tile[data-tier="40"] { border-color: rgba(233, 30, 99, 0.55); }
+  .tile[data-tier="30"] { border-color: rgba(255, 152, 0, 0.55); }
+  .tile[data-tier="20"] { border-color: rgba(33, 150, 243, 0.50); }
+
+  .art {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    background: #dfeaf4;
+    overflow: hidden;
+  }
+
+  /* 只作用于卡面本身：.tag / .laser 同为 <img>，不能被这条规则拉伸 */
+  .art .art-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  /* 只压暗卡面本身，别把角标和镭射标一起灰掉 */
+  .tile[data-owned="0"] .art-img { filter: grayscale(1) brightness(0.55); }
+  .tile[data-owned="0"] .name { color: rgba(35, 64, 95, 0.40); }
+  .tile[data-owned="0"] .rate { color: rgba(35, 64, 95, 0.26); }
+
+  /* 左上角档位角标（官方 tag_30 / tag_40） */
+  .tag {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 56%;
+    max-width: 108px;
+    height: auto;
+    display: block;
+    filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.34));
+  }
+
+  /* 镭射标记：压在卡面底部居中，宽度约为卡宽 35%（对齐官方收藏集） */
+  .laser {
+    position: absolute;
+    bottom: 3.5%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 36%;
+    max-width: 100px;
+    height: auto;
+    display: block;
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.32));
+  }
+
+  .laser-fallback {
+    position: absolute;
+    bottom: 3.5%;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 2px 8px;
+    border-radius: 7px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+    color: #ffffff;
+    background: linear-gradient(100deg, #a78bfa, #60a5fa, #34d399);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.30);
+  }
+
+  .check {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    min-width: 26px;
+    height: 26px;
+    padding: 0 7px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    font-size: 14px;
+    font-weight: 700;
+    color: #6bffa8;
+    background: rgba(12, 14, 20, 0.78);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tile[data-owned="0"] .check { display: none; }
+
+  .meta { padding: 9px 10px 11px; }
+
+  .name {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--ink);
+    line-height: 1.3;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .line {
+    margin-top: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+
+  .tier-label {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: rgba(110, 110, 118, 0.72);
+  }
+
+  .tile[data-tier="40"] .tier-label { color: #e91e63; }
+  .tile[data-tier="30"] .tier-label { color: #ff9800; }
+  .tile[data-tier="20"] .tier-label { color: #2196f3; }
+
+  .rate {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- 页脚 ---------- */
+  .foot {
+    margin-top: 30px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 15px;
+    color: var(--ink-faint);
+  }
+
+  .foot strong { color: var(--yi-deep); font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="root" data-dark="{{ 'true' if is_dark else 'false' }}">
+
+  {% if bg %}<img class="bg" src="{{ bg }}" alt="">{% endif %}
+  <div class="scrim"></div>
+
+  <div class="content">
+
+    <div id="glass">
+      <div class="veil"></div>
+      <div class="panel-inner">
+        <div class="head">
+          <div class="title">
+            <div class="badge">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 4.5h6a3 3 0 0 1 3 3V20a2.4 2.4 0 0 0-2.4-2.4H4z"></path>
+                <path d="M20 4.5h-6a3 3 0 0 0-3 3V20a2.4 2.4 0 0 1 2.4-2.4H20z"></path>
+              </svg>
+            </div>
+            <div class="title-text">
+              <div class="title-main">我的 <em>图鉴</em></div>
+              <div class="title-sub">{{ sender }} · 第 {{ index }}/{{ pages }} 页 · {{ page.acts | join(' · ') }}</div>
+            </div>
+          </div>
+          <div class="tally">
+            <div class="tally-item done">
+              <div class="tally-label">已收集</div>
+              <div class="tally-value">{{ collected }}/{{ total }}</div>
+            </div>
+            <div class="tally-item dup">
+              <div class="tally-label">重复</div>
+              <div class="tally-value">{{ duplicates }}</div>
+            </div>
+            <div class="tally-item">
+              <div class="tally-label">本页</div>
+              <div class="tally-value">{{ page.have }}/{{ page.total }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {% for section in page.sections %}
+    <div class="section">
+      <div class="section-head">
+        <div class="section-act">{{ section.act }}</div>
+        <div class="section-name">{{ section.pool }}</div>
+        <div class="section-count">{{ section.have }}/{{ section.total }}</div>
+      </div>
+      <div class="grid">
+        {% for tile in section.tiles %}
+        <div class="tile" data-tier="{{ tile.tier_level }}" data-owned="{{ 1 if tile.owned else 0 }}">
+          <div class="art">
+            {% if tile.src %}<img class="art-img" src="{{ tile.src }}" alt="">{% endif %}
+            {% if tile.tag %}<img class="tag" src="{{ tile.tag }}" alt="">{% endif %}
+            {% if tile.laser %}
+              {% if laser_uri %}<img class="laser" src="{{ laser_uri }}" alt="">
+              {% else %}<div class="laser-fallback">镭射款 ×{{ tile.laser }}</div>{% endif %}
+            {% endif %}
+            <div class="check">{% if tile.owned > 1 %}×{{ tile.owned }}{% else %}✓{% endif %}</div>
+          </div>
+          <div class="meta">
+            <div class="name">{{ tile.name }}</div>
+            <div class="line">
+              <div class="tier-label">{{ tile.tier }}</div>
+              <div class="rate">{{ tile.rate }}%</div>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+
+    <div class="foot">
+      <div>灰色为未收集 · 数字为持有数量 · 左上角大/小隐藏 · 底部为镭射款</div>
+      <div>发 <strong>/抽卡</strong> 继续收集</div>
+    </div>
+
+  </div>
+
+  <script type="module">
+    const cfg = {{ glass_json | safe }};
+
+    /** 等 shader 上传完底图并跑过几帧模糊：头几帧是白的，不能拿去截图。 */
+    const settle = () =>
+      new Promise((resolve) => {
+        let frames = 0;
+        const tick = () => {
+          frames += 1;
+          if (frames >= 3) {
+            setTimeout(resolve, 260);
+            return;
+          }
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+        setTimeout(resolve, 4000);
+      });
+
+    const upgrade = async () => {
+      const rootEl = document.getElementById('root');
+      const glassEl = document.getElementById('glass');
+      if (!rootEl || !glassEl) return;
+
+      // LiquidGlass 采样的是同级底图：没有真实 <img> 可采时只输出发白面板。
+      if (!cfg.hasImage) return;
+
+      const probe = document.createElement('canvas');
+      if (!probe.getContext('webgl') && !probe.getContext('experimental-webgl')) return;
+
+      try {
+        const mod = await import(cfg.cdn);
+        const LiquidGlass = mod.LiquidGlass || (mod.default && mod.default.LiquidGlass);
+        if (!LiquidGlass) throw new Error('LiquidGlass export not found');
+
+        window.__azureGlass = await LiquidGlass.init({
+          root: rootEl,
+          glassElements: [glassEl],
+          defaults: cfg.options
+        });
+
+        await settle();
+        glassEl.classList.add('is-liquid');
+      } catch (err) {
+        glassEl.classList.remove('is-liquid');
+        console.warn('[azuregacha] liquid glass skipped, CSS glass stays active:', err);
+      }
+    };
+
+    if (cfg && cfg.enabled) {
+      if (document.readyState === 'complete') upgrade();
+      else window.addEventListener('load', upgrade, { once: true });
+    }
+  </script>
+</body>
+</html>
