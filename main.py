@@ -12,23 +12,174 @@ the per-chat pool selection) lives in this plugin's own key-value storage.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import random
 import re
 import uuid
 from pathlib import Path
+
+import jinja2
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import At
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core import sp
-from PIL import Image as PILImage
+
+
+class HtmlRenderer:
+    """Render plugin HTML to a JPEG with a headless Chromium via Playwright.
+
+    AstrBot's built-in t2i either calls a remote service or needs Pillow, and
+    both make local artwork awkward. Driving Chromium in-process keeps rendering
+    local, which also lets templates reference card files through ``file://``
+    URLs instead of inlining megabytes of base64.
+    """
+
+    def __init__(self, work_dir: Path) -> None:
+        self.work_dir = work_dir
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        # 允许 2 个页面同时渲染；浏览器复用同一个 context 以保留 HTTP 缓存。
+        self._lock = asyncio.Semaphore(2)
+
+    async def _ensure_browser(self):
+        """Start Chromium on first use and reuse it afterwards.
+
+        Returns:
+            The connected browser instance.
+
+        Raises:
+            RuntimeError: When playwright or its browser is not installed.
+        """
+        if self._browser is not None and self._browser.is_connected():
+            return self._browser
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as exc:
+            raise RuntimeError(
+                "缺少 playwright，请先执行：pip install playwright && playwright install chromium"
+            ) from exc
+        self._playwright = await async_playwright().start()
+        try:
+            self._browser = await self._playwright.chromium.launch(
+                # The flag lets canvas read pixels back from file:// images,
+                # which the templates use to decide how thick the glass is.
+                args=[
+                    "--no-sandbox",
+                    "--allow-file-access-from-files",
+                    "--font-render-hinting=none",
+                ],
+            )
+        except Exception as exc:
+            await self._playwright.stop()
+            self._playwright = None
+            raise RuntimeError(
+                "Chromium 未就绪，请执行：playwright install chromium"
+            ) from exc
+        return self._browser
+
+    async def render(self, html: str, out_path: Path, quality: int = 92) -> Path | None:
+        """Render ``html`` to ``out_path``.
+
+        The page is measured after load so the screenshot hugs ``#root``, which
+        keeps variable-height handbooks from carrying blank margins.
+
+        Args:
+            html: Fully rendered document.
+            out_path: Destination JPEG.
+            quality: JPEG quality.
+
+        Returns:
+            ``out_path`` when the file was written, else None.
+        """
+        source = self.work_dir / f"page_{uuid.uuid4().hex}.html"
+        try:
+            source.write_text(html, encoding="utf-8")
+        except OSError as exc:
+            logger.error(f"Failed to write render page: {exc}")
+            return None
+
+        async with self._lock:
+            try:
+                browser = await self._ensure_browser()
+                if self._context is None:
+                    self._context = await browser.new_context(
+                        viewport={"width": 2200, "height": 1400},
+                        device_scale_factor=1,
+                    )
+                context = self._context
+            except RuntimeError:
+                source.unlink(missing_ok=True)
+                raise
+            page = await context.new_page()
+            try:
+                await page.goto(source.as_uri(), wait_until="load")
+                try:
+                    await page.wait_for_function(
+                        "window.__renderReady === true", timeout=12000
+                    )
+                except Exception:
+                    logger.warning("Template did not report __renderReady; shooting as-is")
+                try:
+                    await page.evaluate("document.fonts && document.fonts.ready")
+                except Exception:
+                    pass
+                await page.wait_for_timeout(80)
+
+                box = await page.evaluate(
+                    "() => { const r = document.getElementById('root').getBoundingClientRect();"
+                    " return {w: Math.ceil(r.width), h: Math.ceil(r.height)}; }"
+                )
+                width, height = int(box["w"]), int(box["h"])
+                if width <= 0 or height <= 0:
+                    logger.error("Rendered page has an empty #root")
+                    return None
+
+                await page.set_viewport_size({"width": width, "height": height})
+                await page.wait_for_timeout(60)
+                await page.screenshot(
+                    path=str(out_path),
+                    type="jpeg",
+                    quality=quality,
+                    clip={"x": 0, "y": 0, "width": width, "height": height},
+                )
+            except Exception:
+                logger.error("Playwright render failed", exc_info=True)
+                return None
+            finally:
+                await page.close()
+                source.unlink(missing_ok=True)
+        return out_path if out_path.is_file() else None
+
+    async def close(self) -> None:
+        """Release the browser and the playwright driver."""
+        if self._context is not None:
+            try:
+                await self._context.close()
+            except Exception:
+                pass
+            self._context = None
+        if self._browser is not None:
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+        if self._playwright is not None:
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
 
 PLUGIN_NAME = "astrbot_plugin_azuregacha"
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 ASSETS_DIR = Path(__file__).parent / "assets"
 DEFAULT_BACKGROUND_PATH = ASSETS_DIR / "default_bg.jpg"
-LIQUID_GLASS_CDN = "https://cdn.jsdelivr.net/npm/@ybouane/liquidglass@1/dist/index.js"
+LIQUID_GLASS_CDN = "https://cdn.jsdmirror.com/npm/@ybouane/liquidglass/dist/index.js"
 
 #: Rarity corner badges, taken from the official collectible-card page.
 TIER_TAG = {40: ASSETS_DIR / "tag_40.png", 30: ASSETS_DIR / "tag_30.png"}
@@ -116,6 +267,7 @@ class AzureGachaPlugin(Star):
         self._pool_index: dict[str, list[tuple[str, dict]]] = {}
         self._build_pool_index()
 
+        self._env = jinja2.Environment(autoescape=False)
         self.templates: dict[str, str] = {}
         for name in ("gacha_result.html", "handbook.html"):
             try:
@@ -124,73 +276,36 @@ class AzureGachaPlugin(Star):
                 self.templates[name] = ""
                 logger.error(f"Failed to read gacha template {name}: {exc}")
 
-        # Background and badge artwork travel inside the page as data URIs,
-        # because the render service may be a remote instance.
-        self.bg_uri, self.bg_dark = self._load_background()
-        self.tag_uris = {
-            tier: self._file_uri(path) for tier, path in TIER_TAG.items() if path.is_file()
+        # Rendering happens in-process, so templates can point at local files
+        # through file:// URLs instead of inlining base64 copies.
+        self.bg_url = self._load_background()
+        self.tag_urls = {
+            tier: path.as_uri() for tier, path in TIER_TAG.items() if path.is_file()
         }
-        self.laser_uri = self._file_uri(LASER_IMAGE)
+        self.laser_url = LASER_IMAGE.as_uri() if LASER_IMAGE.is_file() else ""
+        self.renderer = HtmlRenderer(self.cache_dir)
 
-    @staticmethod
-    def _file_uri(path: Path) -> str:
-        """Read an image file as a data URI.
+    async def terminate(self) -> None:
+        """Shut down the headless browser when the plugin unloads."""
+        await self.renderer.close()
 
-        Args:
-            path: Image on disk.
-
-        Returns:
-            ``data:image/png;base64,...`` or an empty string when unreadable.
-        """
-        import base64
-
-        try:
-            raw = path.read_bytes()
-        except OSError as exc:
-            logger.warning(f"Failed to read gacha asset {path.name}: {exc}")
-            return ""
-        return "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
-
-    def _load_background(self) -> tuple[str, bool]:
-        """Resolve the handbook background and whether it reads as dark.
+    def _load_background(self) -> str:
+        """Resolve the handbook background.
 
         A user-supplied ``background.jpg``/``background.png`` in the plugin data
         directory wins over the bundled watercolour plate.
 
         Returns:
-            ``(data_uri, is_dark)``; the URI is empty when no image is usable.
+            A ``file://`` URL, or an empty string when no image is usable.
         """
-        import base64
-        import io
-
         for candidate in (
             self.data_dir / "background.jpg",
             self.data_dir / "background.png",
             DEFAULT_BACKGROUND_PATH,
         ):
-            if not candidate.is_file():
-                continue
-            try:
-                with PILImage.open(candidate) as img:
-                    img = img.convert("RGB")
-                    scale = HANDBOOK_WIDTH / img.width
-                    if scale < 1:
-                        img = img.resize(
-                            (HANDBOOK_WIDTH, max(1, round(img.height * scale))),
-                            PILImage.Resampling.LANCZOS,
-                        )
-                    # The glass header sits at the top, so sample that band.
-                    probe = img.crop((0, 0, img.width, max(1, int(img.height * 0.34))))
-                    grey = probe.convert("L").resize((32, 32))
-                    luma = sum(grey.getdata()) / 1024 / 255
-                    buffer = io.BytesIO()
-                    img.save(buffer, format="JPEG", quality=86, optimize=True)
-                uri = "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
-                logger.info(f"Handbook background: {candidate.name} (luma {luma:.2f})")
-                return uri, luma < 0.45
-            except (OSError, ValueError) as exc:
-                logger.warning(f"Failed to load background {candidate.name}: {exc}")
-        return "", False
+            if candidate.is_file():
+                return candidate.as_uri()
+        return ""
 
     # ------------------------------------------------------------------ 数据
 
@@ -205,8 +320,6 @@ class AzureGachaPlugin(Star):
         """
         path = self.data_dir / "catalog.json"
         try:
-            import json
-
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             logger.error(f"Failed to load gacha catalog {path}: {exc}")
@@ -387,49 +500,20 @@ class AzureGachaPlugin(Star):
 
     # ------------------------------------------------------------------ 渲染
 
-    async def _thumb_uri(self, card_hash: str, width: int) -> str:
-        """Return a small JPEG data URI for a card, cached on disk.
+    def _card_url(self, card_hash: str) -> str:
+        """Return the ``file://`` URL of a card image.
 
-        The render service may be remote, so card artwork has to travel inside
-        the page as a data URI; the full-size image stays on disk for sending.
+        Rendering is local now, so the page can pull the original JPEG straight
+        off disk and let Chromium scale it; no thumbnail cache is needed.
 
         Args:
             card_hash: Catalog key.
-            width: Longest logical width of the rendered slot, in CSS pixels.
-                The thumbnail is generated at twice this width so it stays sharp
-                on high-density output.
 
         Returns:
-            ``data:image/jpeg;base64,...`` or an empty string when unavailable.
+            A ``file://`` URL, or an empty string when the artwork is missing.
         """
-        import base64
-        import io
-
-        target_width = width * 2
-        thumb_path = self.cache_dir / f"{card_hash}@{target_width}.jpg"
-        raw = None
-        if thumb_path.is_file():
-            try:
-                raw = thumb_path.read_bytes()
-            except OSError:
-                raw = None
-        if raw is None:
-            source = self.cards_dir / f"{card_hash}.jpg"
-            try:
-                with PILImage.open(source) as img:
-                    img = img.convert("RGB")
-                    img = img.resize(
-                        (target_width, max(1, round(img.height * target_width / img.width))),
-                        PILImage.Resampling.LANCZOS,
-                    )
-                    buffer = io.BytesIO()
-                    img.save(buffer, format="JPEG", quality=84, optimize=True)
-                    raw = buffer.getvalue()
-                thumb_path.write_bytes(raw)
-            except (OSError, ValueError) as exc:
-                logger.warning(f"Failed to build thumbnail for {card_hash}: {exc}")
-                return ""
-        return "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+        path = self.cards_dir / f"{card_hash}.jpg"
+        return path.as_uri() if path.is_file() else ""
 
     def _roll_laser(self, entry: dict) -> bool:
         """Decide whether a drawn card is a 镭射 (holo) copy.
@@ -448,6 +532,24 @@ class AzureGachaPlugin(Star):
             return False
         return random.random() < LASER_RATE
 
+    def _glass_json(self) -> str:
+        """Build the LiquidGlass config injected into the handbook script.
+
+        The template drops this into ``const cfg = ...`` verbatim, so it has to
+        be real JSON: a Python dict literal would be invalid JavaScript and the
+        whole module would fail to parse, silently disabling the glass effect.
+
+        Returns:
+            A JSON string.
+        """
+        payload = {
+            "enabled": True,
+            "hasImage": bool(self.bg_url),
+            "cdn": LIQUID_GLASS_CDN,
+            "options": GLASS_OPTIONS,
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
     async def _render(self, event: AstrMessageEvent, template: str, data: dict) -> str | None:
         """Render a template to an image file.
 
@@ -463,31 +565,17 @@ class AzureGachaPlugin(Star):
         if not source:
             return None
         try:
-            path = await self.html_render(
-                source,
-                data,
-                return_url=False,
-                options={
-                    "full_page": True,
-                    "type": "jpeg",
-                    "quality": 92,
-                    "animations": "disabled",
-                    "caret": "hide",
-                },
-                umo=event.unified_msg_origin,
-            )
+            html = self._env.from_string(source).render(**data)
         except Exception:
             logger.error(f"Failed to render gacha template {template}", exc_info=True)
             return None
-        if not path:
-            return None
-        # Hand out a stable file under our own cache directory.
         target = self.cache_dir / f"{template.split('.')[0]}_{uuid.uuid4().hex}.jpg"
         try:
-            Path(path).replace(target)
-        except OSError:
-            return path
-        return str(target)
+            rendered = await self.renderer.render(html, target)
+        except RuntimeError as exc:
+            logger.error(f"Renderer unavailable: {exc}")
+            return None
+        return str(rendered) if rendered else None
 
     # ------------------------------------------------------------------ 指令
 
@@ -531,8 +619,6 @@ class AzureGachaPlugin(Star):
             drawn.append((card_hash, entry, owned[card_hash], laser))
         await self._save_state(state)
 
-        # Match the thumbnail to the slot the result card will use for it.
-        cell = 380 if count == 1 else 440 if count <= 4 else 290 if count <= 6 else 176
         rows = []
         for card_hash, entry, have, laser in drawn:
             tier = int(entry.get("card_scarcity") or 0)
@@ -545,8 +631,8 @@ class AzureGachaPlugin(Star):
                     "rate": entry.get("rate_pct", 0),
                     "owned": have,
                     "laser": laser,
-                    "tag": self.tag_uris.get(tier, ""),
-                    "src": await self._thumb_uri(card_hash, cell),
+                    "tag": self.tag_urls.get(tier, ""),
+                    "src": self._card_url(card_hash),
                 }
             )
 
@@ -560,7 +646,7 @@ class AzureGachaPlugin(Star):
                 "left": left,
                 "pool": scope["label"],
                 "total": len(self.catalog),
-                "laser_uri": self.laser_uri,
+                "laser_url": self.laser_url,
             },
         )
         if not result:
@@ -677,8 +763,8 @@ class AzureGachaPlugin(Star):
                             "rate": entry.get("rate_pct", 0),
                             "owned": int(owned.get(card_hash, 0) or 0),
                             "laser": int(laser_owned.get(card_hash, 0) or 0),
-                            "tag": self.tag_uris.get(tier, ""),
-                            "src": await self._thumb_uri(card_hash, HANDBOOK_CELL_WIDTH),
+                            "tag": self.tag_urls.get(tier, ""),
+                            "src": self._card_url(card_hash),
                         }
                     )
                 sections.append(
@@ -713,32 +799,27 @@ class AzureGachaPlugin(Star):
         duplicates = sum(max(0, int(n) - 1) for n in owned.values())
         sender = event.get_sender_name() or uid
 
-        images = []
-        for index, page in enumerate(pages, 1):
-            image = await self._render(
-                event,
-                "handbook.html",
-                {
-                    "page": page,
-                    "index": index,
-                    "pages": len(pages),
-                    "collected": collected,
-                    "total": len(self.catalog),
-                    "duplicates": duplicates,
-                    "sender": sender,
-                    "bg": self.bg_uri,
-                    "is_dark": self.bg_dark,
-                    "laser_uri": self.laser_uri,
-                    "glass_json": {
-                        "enabled": True,
-                        "hasImage": bool(self.bg_uri),
-                        "cdn": LIQUID_GLASS_CDN,
-                        "options": GLASS_OPTIONS,
-                    },
-                },
-            )
-            if image:
-                images.append(image)
+        # Each page carries 30+ full-size cards, so rendering them one by one
+        # makes /图鉴 crawl. The renderer caps concurrency internally.
+        payloads = [
+            {
+                "page": page,
+                "index": index,
+                "pages": len(pages),
+                "collected": collected,
+                "total": len(self.catalog),
+                "duplicates": duplicates,
+                "sender": sender,
+                "bg": self.bg_url,
+                "laser_url": self.laser_url,
+                "glass_json": self._glass_json(),
+            }
+            for index, page in enumerate(pages, 1)
+        ]
+        rendered = await asyncio.gather(
+            *(self._render(event, "handbook.html", payload) for payload in payloads)
+        )
+        images = [image for image in rendered if image]
 
         if not images:
             yield event.plain_result("图鉴渲染失败")

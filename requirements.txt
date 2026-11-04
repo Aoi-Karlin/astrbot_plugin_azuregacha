@@ -1,2 +1,2 @@
-aiohttp>=3.8
-Pillow>=10.0
+playwright>=1.40
+jinja2>=3.1

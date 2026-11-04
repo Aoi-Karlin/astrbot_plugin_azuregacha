@@ -4,11 +4,20 @@
 
 移植自 Koishi 版抽卡插件，去掉了打工/蹭饭那套额外赚分玩法，只保留抽卡。
 
-## 依赖
+## 依赖与渲染
 
 - [astrbot_plugin_azuresignin](https://github.com/)（积分来源，必须同时安装）
-- `Pillow`（生成缩略图）
+- `playwright` + `jinja2`（见 `requirements.txt`）
 - AstrBot >= 4.13.0
+
+结果图和图鉴由插件自己用 Playwright 驱动无头 Chromium 渲染，不走 AstrBot 的 t2i，也不依赖 Pillow。首次安装要装一次浏览器：
+
+```bash
+pip install playwright
+playwright install chromium
+```
+
+因为渲染在本机进程内完成，模板直接用 `file://` 引用卡图和角标，不再把图转成 base64——省掉了缩略图缓存，`cache/` 目录现在只放渲染出来的成品。
 
 ## 指令
 
