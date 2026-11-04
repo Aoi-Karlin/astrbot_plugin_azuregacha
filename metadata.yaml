@@ -1,0 +1,8 @@
+name: astrbot_plugin_azuregacha
+display_name: Azure 收藏集抽卡
+short_desc: 模拟收藏集抽卡，按官方概率抽取，积分与打卡插件互通
+desc: 移植自 Koishi 的收藏集抽卡插件。按 Bilibili 收藏集的官方流通概率抽取卡片，卡池/系列/全部三种模式，收集进度全局共享。抽卡消耗的积分直接读写 astrbot_plugin_azuresignin 的积分余额，一次抽卡用 WebView 渲染结果图后逐张发送卡图。
+version: 1.0.0
+author: Azure
+repo: ""  # 填你自己的插件仓库地址，AstrBot 会用它检查更新；留空则不检查
+astrbot_version: ">=4.13.0"
