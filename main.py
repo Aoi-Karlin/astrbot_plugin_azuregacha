@@ -227,10 +227,6 @@ MAX_DRAW = 10
 #: Pools that must never be drawn: a promo pool and the synthetic "all" pool.
 EXCLUDE_POOLS = frozenset({"洛天依福利卡池", "全部奖池"})
 
-#: Hidden tiers are additionally scaled down when drawing from "all pools",
-#: because picking a pool first already flattens the official rate table.
-HIDDEN_COMPRESS = 0.4
-
 ACT_NAMES = {
     "171": "天依游学记系列",
     "282": "Vsinger集",
@@ -267,6 +263,7 @@ class AzureGachaPlugin(Star):
         self.data_dir = StarTools.get_data_dir(PLUGIN_NAME)
         self.cards_dir = self.data_dir / "cards"
         self.videos_dir = self.data_dir / "videos"
+        self.holo_dir = self.data_dir / "holo"
         self.cache_dir = self.data_dir / "cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -497,17 +494,14 @@ class AzureGachaPlugin(Star):
             scope["pools"], weights=[len(self._pool_index[p]) for p in scope["pools"]]
         )[0]
         cards = self._pool_index[pool]
-        weights = []
-        for _, entry in cards:
-            rate = float(entry.get("rate_pct") or 0)
-            if int(entry.get("card_scarcity") or 0) in (20, 30, 40):
-                rate *= HIDDEN_COMPRESS
-            weights.append(rate)
+        # 池内严格按官方 rate_pct 抽。素材补全后卡池里不再有"单卡池必中"的
+        # 畸变，之前那个 0.4 的隐藏档压缩系数已经没有存在必要了。
+        weights = [float(entry.get("rate_pct") or 0) for _, entry in cards]
         return self._pick_weighted(cards, weights)
 
     # ------------------------------------------------------------------ 渲染
 
-    def _card_url(self, card_hash: str) -> str:
+    def _card_url(self, card_hash: str, laser: bool = False) -> str:
         """Return the ``file://`` URL of a card image.
 
         Rendering is local now, so the page can pull the original JPEG straight
@@ -515,10 +509,15 @@ class AzureGachaPlugin(Star):
 
         Args:
             card_hash: Catalog key.
+            laser: When true, prefer the official holo artwork if it exists.
 
         Returns:
             A ``file://`` URL, or an empty string when the artwork is missing.
         """
+        if laser:
+            holo = self.holo_dir / f"{card_hash}.jpg"
+            if holo.is_file():
+                return holo.as_uri()
         path = self.cards_dir / f"{card_hash}.jpg"
         return path.as_uri() if path.is_file() else ""
 
@@ -536,6 +535,30 @@ class AzureGachaPlugin(Star):
         """
         uin = str(event.get_self_id() or "0")
         return FORWARD_NAME, uin
+
+    @staticmethod
+    def _uid(event: AstrMessageEvent) -> str:
+        """取发送者 ID。
+
+        ``AstrMessageEvent.get_sender_id()`` 在 ``sender.user_id`` 不是字符串
+        时返回空串，那样所有玩家会共用同一个 key，收藏进度就变成"公用"的了。
+        这里再兜一层原始字段。
+
+        Args:
+            event: 消息事件。
+
+        Returns:
+            发送者 ID；确实取不到时返回空字符串。
+        """
+        uid = event.get_sender_id()
+        if uid:
+            return str(uid)
+        sender = getattr(event.message_obj, "sender", None)
+        for attr in ("user_id", "id", "uin"):
+            value = getattr(sender, attr, None)
+            if value not in (None, ""):
+                return str(value)
+        return ""
 
     def _roll_laser(self, entry: dict) -> bool:
         """Decide whether a drawn card is a 镭射 (holo) copy.
@@ -611,7 +634,10 @@ class AzureGachaPlugin(Star):
             return
         count = max(1, min(MAX_DRAW, int(raw) if raw else 1))
 
-        uid = event.get_sender_id()
+        uid = self._uid(event)
+        if not uid:
+            yield event.plain_result("取不到你的账号 ID，无法记账。请把这条发给管理员。")
+            return
         need = count * COST
         points = await self._get_points(uid)
         if points < need:
@@ -654,7 +680,7 @@ class AzureGachaPlugin(Star):
                     "owned": have,
                     "laser": laser,
                     "tag": self.tag_urls.get(tier, ""),
-                    "src": self._card_url(card_hash),
+                    "src": self._card_url(card_hash, laser),
                 }
             )
 
@@ -723,11 +749,14 @@ class AzureGachaPlugin(Star):
             return
 
         state = await self._load_state()
-        owned = state["owned"].get(event.get_sender_id(), {})
+        owned = state["owned"].get(self._uid(event), {})
         current = state["pools"].get(self._chat_key(event), ALL_POOLS)
 
         names = sorted(self._pool_index)
-        lines = [f"🎴 卡池（当前：{current}）", f"共 {len(names)} 个奖池 · 卡库 {len(self.catalog)} 张", ""]
+        lines = [f"🎴 卡池（当前：{current}）", f"共 {len(names)} 个奖池 · 卡库 {len(self.catalog)} 张",
+            "数字为「你已收集/该池总数」",
+            "",
+        ]
         for i, name in enumerate(names, 1):
             cards = self._pool_index[name]
             have = sum(1 for h, _ in cards if owned.get(h))
@@ -771,11 +800,18 @@ class AzureGachaPlugin(Star):
         await self._save_state(state)
 
         scope = self._resolve_selection(chosen)
+        # 这里必须报「你已收集几张」，只报奖池大小的话所有人看到的都是同一个数字。
+        owned = state["owned"].get(self._uid(event), {})
         if scope["mode"] == "single":
-            detail = f"{len(scope['list'])} 张卡"
+            cards = scope["list"]
         else:
-            detail = f"{len(scope['pools'])} 个奖池"
-        yield event.plain_result(f"✅ 已切换到「{chosen}」（{detail}）\n上次是「{current}」")
+            cards = [item for pool in scope["pools"] for item in self._pool_index[pool]]
+        have = sum(1 for card_hash, _ in cards if owned.get(card_hash))
+        yield event.plain_result(
+            f"✅ 已切换到「{chosen}」\n"
+            f"奖池 {len(cards)} 张 · 你已收集 {have} 张\n"
+            f"上次是「{current}」"
+        )
 
     @filter.command("图鉴")
     async def handbook(self, event: AstrMessageEvent):
@@ -785,7 +821,10 @@ class AzureGachaPlugin(Star):
             return
 
         state = await self._load_state()
-        uid = event.get_sender_id()
+        uid = self._uid(event)
+        if not uid:
+            yield event.plain_result("取不到你的账号 ID，无法读取进度。请把这条发给管理员。")
+            return
         owned = state["owned"].get(uid, {})
         laser_owned = state["laser"].get(uid, {})
 
@@ -819,7 +858,9 @@ class AzureGachaPlugin(Star):
                             "owned": int(owned.get(card_hash, 0) or 0),
                             "laser": int(laser_owned.get(card_hash, 0) or 0),
                             "tag": self.tag_urls.get(tier, ""),
-                            "src": self._card_url(card_hash),
+                            "src": self._card_url(
+                                card_hash, bool(laser_owned.get(card_hash))
+                            ),
                         }
                     )
                 sections.append(
@@ -865,6 +906,7 @@ class AzureGachaPlugin(Star):
                 "total": len(self.catalog),
                 "duplicates": duplicates,
                 "sender": sender,
+                "uid": uid,
                 "bg": self.bg_url,
                 "laser_url": self.laser_url,
                 "glass_json": self._glass_json(),
@@ -924,7 +966,7 @@ class AzureGachaPlugin(Star):
             return
 
         state = await self._load_state()
-        owned = state["owned"].get(event.get_sender_id(), {})
+        owned = state["owned"].get(self._uid(event), {})
         hits = [
             (card_hash, entry)
             for card_hash, entry in self.catalog.items()
@@ -1031,7 +1073,7 @@ class AzureGachaPlugin(Star):
         Returns:
             ``(uid, remaining_text)``; the sender is the default target.
         """
-        uid = event.get_sender_id()
+        uid = AzureGachaPlugin._uid(event)
         for component in event.message_obj.message:
             if isinstance(component, At) and str(component.qq) != "all":
                 uid = str(component.qq)
