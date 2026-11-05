@@ -245,6 +245,9 @@ ACT_NAMES = {
 TIER_NAME = {40: "大隐藏", 30: "小隐藏", 20: "稀有", 10: "普通"}
 TIER_STAR = {40: "★★★★★", 30: "★★★★", 20: "★★★", 10: "★★"}
 
+#: 合并转发里显示的昵称。用机器人身份，避免看起来像触发者自己发的。
+FORWARD_NAME = "收藏集"
+
 #: Tiers whose animated clip is sent as its own message after the draw.
 VIDEO_TIERS = frozenset({30, 40})
 
@@ -519,6 +522,21 @@ class AzureGachaPlugin(Star):
         path = self.cards_dir / f"{card_hash}.jpg"
         return path.as_uri() if path.is_file() else ""
 
+    @staticmethod
+    def _forward_identity(event: AstrMessageEvent) -> tuple[str, str]:
+        """合并转发节点上显示的身份。
+
+        用触发者自己的昵称和 QQ 号会让人以为是他手动转发的，所以统一署机器人。
+
+        Args:
+            event: 触发的消息事件。
+
+        Returns:
+            ``(昵称, QQ 号)``。
+        """
+        uin = str(event.get_self_id() or "0")
+        return FORWARD_NAME, uin
+
     def _roll_laser(self, entry: dict) -> bool:
         """Decide whether a drawn card is a 镭射 (holo) copy.
 
@@ -661,6 +679,7 @@ class AzureGachaPlugin(Star):
         yield event.image_result(result)
 
         # 原图打包成一条合并转发，刷屏友好；隐藏档再单独补发一段动图。
+        name, uin = self._forward_identity(event)
         nodes = []
         for card_hash, entry, have, laser in drawn:
             path = self.cards_dir / f"{card_hash}.jpg"
@@ -675,8 +694,8 @@ class AzureGachaPlugin(Star):
             nodes.append(
                 Node(
                     content=[Plain(caption), Image.fromFileSystem(str(path))],
-                    name=event.get_sender_name() or "收藏集",
-                    uin=str(event.get_sender_id()),
+                    name=name,
+                    uin=uin,
                 )
             )
         if nodes:
@@ -860,8 +879,20 @@ class AzureGachaPlugin(Star):
         if not images:
             yield event.plain_result("图鉴渲染失败")
             return
-        for image in images:
-            yield event.image_result(image)
+        if len(images) == 1:
+            yield event.image_result(images[0])
+            return
+        # 多页图鉴也打包成一条合并转发，别再一页一条刷屏。
+        name, uin = self._forward_identity(event)
+        nodes = [
+            Node(
+                content=[Plain(f"第 {i}/{len(images)} 页"), Image.fromFileSystem(image)],
+                name=name,
+                uin=uin,
+            )
+            for i, image in enumerate(images, 1)
+        ]
+        yield event.chain_result([Nodes(nodes=nodes)])
 
     @staticmethod
     def _page(sections: list[dict]) -> dict:
