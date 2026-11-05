@@ -2,6 +2,8 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<!-- file:// 页面会把样式表里的相对字体路径解析到本地目录，用 base 把来源钉回 CDN -->
+<base href="https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-sc@5/">
 <title>handbook</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-sc@5/400.css">
@@ -387,14 +389,13 @@
 </style>
 </head>
 <body>
-<div id="root" data-dark="{{ 'true' if is_dark else 'false' }}">
+<div id="root">
 
   {% if bg %}<img class="bg" src="{{ bg }}" alt="">{% endif %}
   <div class="scrim"></div>
 
-  <div class="content">
-
-    <div id="glass">
+  <!-- LiquidGlass 要求玻璃元素是 root 的直接子节点，所以不能套在 .content 里 -->
+  <div id="glass">
       <div class="veil"></div>
       <div class="panel-inner">
         <div class="head">
@@ -429,6 +430,7 @@
       </div>
     </div>
 
+  <div class="content">
     {% for section in page.sections %}
     <div class="section">
       <div class="section-head">
@@ -443,7 +445,7 @@
             {% if tile.src %}<img class="art-img" src="{{ tile.src }}" alt="">{% endif %}
             {% if tile.tag %}<img class="tag" src="{{ tile.tag }}" alt="">{% endif %}
             {% if tile.laser %}
-              {% if laser_uri %}<img class="laser" src="{{ laser_uri }}" alt="">
+              {% if laser_url %}<img class="laser" src="{{ laser_url }}" alt="">
               {% else %}<div class="laser-fallback">镭射款 ×{{ tile.laser }}</div>{% endif %}
             {% endif %}
             <div class="check">{% if tile.owned > 1 %}×{{ tile.owned }}{% else %}✓{% endif %}</div>
@@ -484,7 +486,7 @@
           requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
-        setTimeout(resolve, 4000);
+        setTimeout(resolve, 1500);
       });
 
     const upgrade = async () => {
@@ -517,10 +519,50 @@
       }
     };
 
-    if (cfg && cfg.enabled) {
-      if (document.readyState === 'complete') upgrade();
-      else window.addEventListener('load', upgrade, { once: true });
-    }
+    /** 采样底图顶部亮度决定玻璃厚度：深色底图要更厚的白雾才压得住字。 */
+    const applyDark = async () => {
+      const rootEl = document.getElementById('root');
+      const bgEl = document.querySelector('#root .bg');
+      if (!rootEl || !bgEl) return;
+      try {
+        await bgEl.decode();
+      } catch (err) {
+        return;
+      }
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 32;
+        canvas.height = 16;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        // 玻璃页头在顶部，只取上面 34% 这一条。
+        const band = bgEl.naturalHeight * 0.34;
+        ctx.drawImage(bgEl, 0, 0, bgEl.naturalWidth, band, 0, 0, 32, 16);
+        const px = ctx.getImageData(0, 0, 32, 16).data;
+        let sum = 0;
+        for (let i = 0; i < px.length; i += 4) {
+          sum += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+        }
+        const luma = sum / (px.length / 4) / 255;
+        rootEl.dataset.dark = luma < 0.45 ? 'true' : 'false';
+      } catch (err) {
+        // 画布被跨域污染时保持默认的浅色玻璃。
+      }
+    };
+
+    const boot = async () => {
+      await applyDark();
+      if (cfg && cfg.enabled) {
+        // CDN 不可达时不能让截图一直等下去，最多 1.2 秒就交回 CSS 毛玻璃。
+        await Promise.race([
+          upgrade(),
+          new Promise((resolve) => setTimeout(resolve, 1200))
+        ]);
+      }
+      window.__renderReady = true;
+    };
+
+    if (document.readyState === 'complete') boot();
+    else window.addEventListener('load', boot, { once: true });
   </script>
 </body>
 </html>

@@ -317,7 +317,7 @@
         {% if row.src %}<img class="art-img" src="{{ row.src }}" alt="">{% endif %}
         {% if row.tag %}<img class="tag" src="{{ row.tag }}" alt="">{% else %}<div class="tag-plain">{{ row.tier }}</div>{% endif %}
         {% if row.laser %}
-          {% if laser_uri %}<img class="laser" src="{{ laser_uri }}" alt="">
+          {% if laser_url %}<img class="laser" src="{{ laser_url }}" alt="">
           {% else %}<div class="laser-fallback">镭射款</div>{% endif %}
         {% endif %}
         {% if row.owned > 1 %}<div class="dup">×{{ row.owned }}</div>{% endif %}
@@ -339,5 +339,15 @@
   </div>
 
 </div>
+<script>
+  // 图片解码完再截图，否则会拍到半张灰底。
+  const ready = () => {
+    const imgs = Array.from(document.images);
+    Promise.all(imgs.map((img) => (img.complete ? null : img.decode().catch(() => null))))
+      .then(() => requestAnimationFrame(() => { window.__renderReady = true; }));
+  };
+  if (document.readyState === 'complete') ready();
+  else window.addEventListener('load', ready, { once: true });
+</script>
 </body>
 </html>
