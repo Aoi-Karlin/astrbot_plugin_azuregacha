@@ -23,7 +23,7 @@ import jinja2
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import At
+from astrbot.api.message_components import At, Image, Node, Nodes, Plain, Video
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core import sp
 
@@ -245,6 +245,9 @@ ACT_NAMES = {
 TIER_NAME = {40: "大隐藏", 30: "小隐藏", 20: "稀有", 10: "普通"}
 TIER_STAR = {40: "★★★★★", 30: "★★★★", 20: "★★★", 10: "★★"}
 
+#: Tiers whose animated clip is sent as its own message after the draw.
+VIDEO_TIERS = frozenset({30, 40})
+
 #: A 镭射 (holo) copy can roll on normal cards of this act only.
 LASER_ACT_ID = "113552"
 LASER_TIERS = frozenset({10})
@@ -260,6 +263,7 @@ class AzureGachaPlugin(Star):
         super().__init__(context)
         self.data_dir = StarTools.get_data_dir(PLUGIN_NAME)
         self.cards_dir = self.data_dir / "cards"
+        self.videos_dir = self.data_dir / "videos"
         self.cache_dir = self.data_dir / "cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -655,10 +659,42 @@ class AzureGachaPlugin(Star):
             return
 
         yield event.image_result(result)
-        for card_hash, _entry, _have, _laser in drawn:
+
+        # 原图打包成一条合并转发，刷屏友好；隐藏档再单独补发一段动图。
+        nodes = []
+        for card_hash, entry, have, laser in drawn:
             path = self.cards_dir / f"{card_hash}.jpg"
-            if path.is_file():
-                yield event.image_result(str(path))
+            if not path.is_file():
+                continue
+            tier = int(entry.get("card_scarcity") or 0)
+            caption = f"{entry.get('card_name', '')} · {TIER_NAME.get(tier, '普通')}"
+            if laser:
+                caption += " · 镭射款"
+            if have > 1:
+                caption += f" · ×{have}"
+            nodes.append(
+                Node(
+                    content=[Plain(caption), Image.fromFileSystem(str(path))],
+                    name=event.get_sender_name() or "收藏集",
+                    uin=str(event.get_sender_id()),
+                )
+            )
+        if nodes:
+            yield event.chain_result([Nodes(nodes=nodes)])
+
+        # 小隐藏 / 大隐藏的动图单独发，视频不适合塞进合并转发。
+        for card_hash, entry, _have, _laser in drawn:
+            tier = int(entry.get("card_scarcity") or 0)
+            if tier not in VIDEO_TIERS:
+                continue
+            video = self.videos_dir / f"{card_hash}.mp4"
+            if video.is_file():
+                yield event.chain_result(
+                    [
+                        Plain(f"🎬 {entry.get('card_name', '')} · {TIER_NAME.get(tier, '')}"),
+                        Video.fromFileSystem(str(video)),
+                    ]
+                )
 
     @filter.command("卡池")
     async def pools(self, event: AstrMessageEvent):
